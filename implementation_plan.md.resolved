@@ -1,0 +1,525 @@
+# FlowCare — System Architecture & Design Document
+
+> **Queue & Appointment Booking System** for a multi-branch service organization operating in Oman.
+> Technology: Node.js · Express · PostgreSQL
+
+---
+
+## 1. High-Level System Architecture
+
+### Layered Architecture (Clean Separation of Concerns)
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                      Client Layer                         │
+│  (Web App · Mobile App · Admin Dashboard · Third-Party)   │
+└──────────────────────────┬────────────────────────────────┘
+                           │ HTTPS / REST
+┌──────────────────────────▼────────────────────────────────┐
+│                   API Gateway / Reverse Proxy              │
+│              (Nginx — rate limiting, SSL, CORS)            │
+└──────────────────────────┬────────────────────────────────┘
+                           │
+┌──────────────────────────▼────────────────────────────────┐
+│                  Express Application Server                │
+│                                                            │
+│  ┌────────────┐  ┌───────────┐  ┌───────────────────────┐ │
+│  │ Middleware  │  │  Routes   │  │  Global Error Handler │ │
+│  │ (Auth, RBAC│  │ /api/v1/* │  │  + Request Logger     │ │
+│  │  Validate) │  │           │  │                       │ │
+│  └─────┬──────┘  └─────┬─────┘  └───────────────────────┘ │
+│        │               │                                   │
+│  ┌─────▼───────────────▼──────────────────────────────┐   │
+│  │              Service / Business Logic Layer         │   │
+│  │  (BookingService, SlotService, BranchService, …)   │   │
+│  └─────────────────────┬──────────────────────────────┘   │
+│                        │                                   │
+│  ┌─────────────────────▼──────────────────────────────┐   │
+│  │             Data Access Layer (DAL / Repositories)  │   │
+│  │         (Knex.js query builder — raw SQL when needed│   │
+│  └─────────────────────┬──────────────────────────────┘   │
+└────────────────────────┼──────────────────────────────────┘
+                         │
+┌────────────────────────▼──────────────────────────────────┐
+│                      PostgreSQL Database                   │
+│         (Primary + optional read replica later)            │
+└───────────────────────────────────────────────────────────┘
+
+Peripheral Services:
+  • File Storage   — local disk (dev) / S3-compatible (prod)
+  • Logging Sink   — Winston → stdout/file → optional ELK
+  • Cache (future) — Redis for session + slot locks
+```
+
+### Key Architectural Decisions
+
+| Concern | Decision | Rationale |
+|---|---|---|
+| **ORM / Query** | Knex.js (query builder) | Fine-grained SQL control, easy migrations |
+| **Auth** | JWT (access + refresh tokens) | Stateless, scalable, standard |
+| **Validation** | Joi / Zod at middleware | Fail fast, never trust client |
+| **File Uploads** | Multer + S3-compatible store | Stream to storage, no memory bloat |
+| **Migrations** | Knex migrations (versioned) | Reproducible, rollback-safe |
+| **Seed Data** | Idempotent seed scripts | `INSERT … ON CONFLICT DO NOTHING` |
+| **API Versioning** | URL prefix `/api/v1` | Future-proof breaking changes |
+
+---
+
+## 2. Conceptual ER Diagram — Tables & Relationships
+
+```mermaid
+erDiagram
+    USER ||--o{ APPOINTMENT : "books"
+    USER ||--o{ STAFF_SERVICE_TYPE : "assigned_to"
+    USER ||--o{ AUDIT_LOG : "performed_by"
+    BRANCH ||--o{ SLOT : "has"
+    BRANCH ||--o{ USER : "belongs_to (staff)"
+    SERVICE_TYPE ||--o{ SLOT : "offered_in"
+    SERVICE_TYPE ||--o{ STAFF_SERVICE_TYPE : "links"
+    SLOT ||--o{ APPOINTMENT : "reserved_via"
+
+    USER {
+        uuid id PK
+        string full_name
+        string email UK
+        string phone
+        string password_hash
+        enum role "admin | branch_manager | staff | customer"
+        uuid branch_id FK "nullable for admin/customer"
+        boolean is_active
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    BRANCH {
+        uuid id PK
+        string name UK
+        string address
+        string city
+        string phone
+        boolean is_active
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    SERVICE_TYPE {
+        uuid id PK
+        string name UK
+        text description
+        int duration_minutes
+        boolean is_active
+        timestamp created_at
+    }
+
+    STAFF_SERVICE_TYPE {
+        uuid id PK
+        uuid staff_id FK
+        uuid service_type_id FK
+        "UNIQUE(staff_id, service_type_id)"
+    }
+
+    SLOT {
+        uuid id PK
+        uuid branch_id FK
+        uuid service_type_id FK
+        date slot_date
+        time start_time
+        time end_time
+        int max_bookings
+        int current_bookings
+        boolean is_active
+        timestamp deleted_at "soft delete"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    APPOINTMENT {
+        uuid id PK
+        uuid customer_id FK
+        uuid slot_id FK
+        uuid staff_id FK "nullable"
+        enum status "booked | cancelled | completed | no_show | rescheduled"
+        string cancellation_reason
+        string attachment_url
+        string id_document_url
+        timestamp booked_at
+        timestamp cancelled_at
+        timestamp rescheduled_from "ref to previous appointment"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    AUDIT_LOG {
+        uuid id PK
+        uuid user_id FK
+        string action
+        string entity_type
+        uuid entity_id
+        jsonb old_values
+        jsonb new_values
+        string ip_address
+        timestamp created_at
+    }
+
+    SYSTEM_SETTINGS {
+        uuid id PK
+        string key UK
+        string value
+        text description
+        timestamp updated_at
+    }
+```
+
+### Relationship Summary
+
+| Relationship | Type | Notes |
+|---|---|---|
+| User → Branch | Many-to-One | Staff/managers belong to a branch; admins & customers are branch-agnostic |
+| Branch → Slot | One-to-Many | Each branch publishes its own slots |
+| ServiceType → Slot | One-to-Many | Each slot is for one service type |
+| User ↔ ServiceType | Many-to-Many | Via `staff_service_type` junction |
+| Slot → Appointment | One-to-Many | A slot can host `max_bookings` appointments |
+| User → Appointment | One-to-Many | Customers book; staff are optionally assigned |
+| User → AuditLog | One-to-Many | Every sensitive action is logged |
+
+---
+
+## 3. Database Design Recommendations
+
+### Constraints
+
+| Table | Constraint | Type | Purpose |
+|---|---|---|---|
+| `user` | `email` | UNIQUE | Prevent duplicate accounts |
+| `user` | `role IN (…)` | CHECK | Enforce valid role enum |
+| `branch` | `name` | UNIQUE | No duplicate branch names |
+| `service_type` | `name` | UNIQUE | No duplicate service names |
+| `staff_service_type` | `(staff_id, service_type_id)` | UNIQUE COMPOSITE | Prevent duplicate assignments |
+| `slot` | `(branch_id, service_type_id, slot_date, start_time)` | UNIQUE COMPOSITE | Prevent duplicate slot definitions |
+| `slot` | `start_time < end_time` | CHECK | Logical time ordering |
+| `slot` | `current_bookings <= max_bookings` | CHECK | Integrity guard |
+| `appointment` | `status IN (…)` | CHECK | Valid state transitions |
+| `system_settings` | `key` | UNIQUE | One value per setting |
+
+### Indexes
+
+```sql
+-- Performance-critical queries
+CREATE INDEX idx_slot_lookup
+  ON slot (branch_id, service_type_id, slot_date, is_active)
+  WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_appointment_customer
+  ON appointment (customer_id, status);
+
+CREATE INDEX idx_appointment_slot
+  ON appointment (slot_id, status);
+
+CREATE INDEX idx_audit_entity
+  ON audit_log (entity_type, entity_id);
+
+CREATE INDEX idx_audit_timestamp
+  ON audit_log (created_at DESC);
+
+CREATE INDEX idx_user_email
+  ON "user" (email);
+
+CREATE INDEX idx_user_branch
+  ON "user" (branch_id) WHERE branch_id IS NOT NULL;
+```
+
+### General Recommendations
+
+- **Use UUIDs (v4)** as primary keys — avoids sequential guessing and makes multi-node merging trivial.
+- **All timestamps in UTC** — convert to `Asia/Muscat` (GMT+4) only at the API response layer.
+- **Use `timestamptz`** in PostgreSQL for all timestamp columns.
+- **Naming**: snake_case for tables/columns; singular table names (`user`, `slot`).
+- **Foreign keys with `ON DELETE RESTRICT`** — prevent accidental cascade; handle deletion in business logic.
+
+---
+
+## 4. Soft Delete Strategy
+
+### Design
+
+Soft delete applies to **Slots** (and optionally users/branches if business requires it).
+
+| Column | Type | Purpose |
+|---|---|---|
+| `is_active` | `boolean DEFAULT true` | Quick filter for active records |
+| `deleted_at` | `timestamptz NULL` | `NULL` = not deleted; timestamp = when deleted |
+
+### Access Pattern
+
+```
+-- Application queries ALWAYS filter:
+WHERE deleted_at IS NULL AND is_active = true
+```
+
+The DAL/repository layer wraps this by default so developers never forget.
+
+### Retention & Permanent Purge
+
+The `system_settings` table stores a key like:
+
+| key | value | description |
+|---|---|---|
+| `slot_retention_days` | `90` | Days to keep soft-deleted slots before permanent purge |
+
+A **scheduled job** (cron or `pg_cron`) runs periodically:
+
+```
+DELETE FROM slot
+WHERE deleted_at IS NOT NULL
+  AND deleted_at < NOW() - INTERVAL '${retention_days} days';
+```
+
+### Rules
+
+1. Soft-deleted slots **cannot** accept new bookings.
+2. Existing appointments on a soft-deleted slot remain valid (graceful wind-down).
+3. Only **Admin** or **Branch Manager** can soft-delete slots.
+4. Permanent purge only runs after verifying no open appointments reference the slot.
+
+---
+
+## 5. Booking Logic — Preventing Double Booking
+
+This is the **most critical section** of the system. Race conditions here cause real business damage.
+
+### Flow
+
+```mermaid
+flowchart TD
+    A["Customer selects slot"] --> B{"Slot exists & is_active & not deleted?"}
+    B -- No --> C["Return 404 / 410"]
+    B -- Yes --> D{"current_bookings < max_bookings?"}
+    D -- No --> E["Return 409 Conflict: Slot Full"]
+    D -- Yes --> F["BEGIN TRANSACTION"]
+    F --> G["SELECT ... FROM slot WHERE id = $1 FOR UPDATE"]
+    G --> H{"Re-check: current_bookings < max_bookings?"}
+    H -- No --> I["ROLLBACK → 409 Conflict"]
+    H -- Yes --> J["INSERT appointment (status = 'booked')"]
+    J --> K["UPDATE slot SET current_bookings = current_bookings + 1"]
+    K --> L["COMMIT"]
+    L --> M["Return 201 Created"]
+```
+
+### Key Mechanism: Pessimistic Locking
+
+```sql
+BEGIN;
+
+-- Lock the specific slot row — other transactions WAIT here
+SELECT * FROM slot
+WHERE id = $1
+  AND is_active = true
+  AND deleted_at IS NULL
+FOR UPDATE;
+
+-- Double-check capacity inside the lock
+-- If current_bookings >= max_bookings → ROLLBACK
+
+-- Otherwise:
+INSERT INTO appointment (...) VALUES (...);
+UPDATE slot SET current_bookings = current_bookings + 1;
+
+COMMIT;
+```
+
+> **Why `FOR UPDATE`?** It acquires a row-level exclusive lock. Any concurrent transaction trying to book the same slot will **block** until this transaction commits or rolls back. This is the standard enterprise pattern for inventory-style problems.
+
+### Additional Safeguards
+
+| Safeguard | Implementation |
+|---|---|
+| **DB-level CHECK** | `current_bookings <= max_bookings` — last line of defense |
+| **Idempotency** | Unique constraint `(customer_id, slot_id)` WHERE status = 'booked' — same customer can't double-book the same slot |
+| **Cancellation** | Sets `status = 'cancelled'`, decrements `current_bookings` — also inside a transaction |
+| **Reschedule** | Cancel old + Book new in a **single transaction** — atomic swap |
+| **Stale reads** | API return `current_bookings` so UI can show availability, but the lock is the source of truth |
+
+---
+
+## 6. Role & Permission Matrix
+
+### Roles
+
+| Role | Scope | Description |
+|---|---|---|
+| **Admin** | System-wide | Full control, multi-branch oversight |
+| **Branch Manager** | Single branch | Manages staff, slots, and appointments for their branch |
+| **Staff** | Single branch | Views assigned appointments, marks completion |
+| **Customer** | Own data | Books/cancels/reschedules own appointments |
+
+### Permission Matrix
+
+| Resource / Action | Admin | Branch Manager | Staff | Customer |
+|---|---|---|---|---|
+| **Branches** — Create | ✅ | ❌ | ❌ | ❌ |
+| **Branches** — Read All | ✅ | ✅ own | ❌ | ✅ list only |
+| **Branches** — Update | ✅ | ✅ own | ❌ | ❌ |
+| **Branches** — Delete | ✅ | ❌ | ❌ | ❌ |
+| **Users** — Create Staff | ✅ | ✅ own branch | ❌ | ❌ |
+| **Users** — Read | ✅ | ✅ own branch | ✅ self | ✅ self |
+| **Users** — Update | ✅ | ✅ own branch | ✅ self | ✅ self |
+| **Users** — Deactivate | ✅ | ✅ own branch staff | ❌ | ❌ |
+| **Service Types** — CRUD | ✅ | ❌ | ❌ | ❌ |
+| **Staff ↔ Service** — Assign | ✅ | ✅ own branch | ❌ | ❌ |
+| **Slots** — Create | ✅ | ✅ own branch | ❌ | ❌ |
+| **Slots** — Read | ✅ | ✅ own branch | ✅ own branch | ✅ available only |
+| **Slots** — Update | ✅ | ✅ own branch | ❌ | ❌ |
+| **Slots** — Soft Delete | ✅ | ✅ own branch | ❌ | ❌ |
+| **Appointments** — Book | ✅ | ✅ | ❌ | ✅ self |
+| **Appointments** — Cancel | ✅ | ✅ own branch | ❌ | ✅ own |
+| **Appointments** — Reschedule | ✅ | ✅ own branch | ❌ | ✅ own |
+| **Appointments** — Complete | ✅ | ✅ own branch | ✅ assigned | ❌ |
+| **Appointments** — Read | ✅ all | ✅ own branch | ✅ assigned | ✅ own |
+| **Audit Logs** — Read | ✅ | ❌ | ❌ | ❌ |
+| **System Settings** — CRUD | ✅ | ❌ | ❌ | ❌ |
+| **File Upload** | ✅ | ✅ | ❌ | ✅ own |
+
+### Implementation Approach
+
+```
+Middleware chain:  authenticate(jwt) → authorize(roles, scopeCheck)
+```
+
+- **`authenticate`** — verifies JWT, attaches `req.user = { id, role, branch_id }`.
+- **`authorize(allowedRoles)`** — checks if `req.user.role` is in the allowed list.
+- **`scopeCheck`** — for Branch Managers and Staff, verify they operate within their own branch:
+  ```
+  if (user.role === 'branch_manager' && resource.branch_id !== user.branch_id)
+      → 403 Forbidden
+  ```
+
+---
+
+## 7. Audit Logging Design
+
+### What to Audit
+
+| Category | Actions |
+|---|---|
+| **Authentication** | Login success/failure, token refresh, password change |
+| **Appointments** | Create, cancel, reschedule, complete, no-show |
+| **Slots** | Create, update, soft-delete, permanent purge |
+| **Users** | Create, deactivate, role change |
+| **System Settings** | Any change |
+
+### Schema Design
+
+```
+audit_log:
+  id           UUID PK
+  user_id      UUID FK → user (who performed the action)
+  action       VARCHAR(50)      — e.g. 'APPOINTMENT_CANCELLED'
+  entity_type  VARCHAR(50)      — e.g. 'appointment'
+  entity_id    UUID             — PK of the affected row
+  old_values   JSONB            — snapshot before change
+  new_values   JSONB            — snapshot after change
+  ip_address   INET             — client IP
+  user_agent   TEXT             — optional
+  created_at   TIMESTAMPTZ      — immutable
+```
+
+### Best Practices
+
+1. **Append-only table** — never `UPDATE` or `DELETE` audit logs. This is a legal record.
+2. **Async write (future optimization)** — in high-throughput scenarios, push audit events to a queue (e.g., Bull/Redis) and write asynchronously. For initial launch, synchronous writes within the same transaction are acceptable.
+3. **Standardized action naming** — `ENTITY_VERB` pattern: `APPOINTMENT_BOOKED`, `SLOT_DELETED`, `USER_ROLE_CHANGED`.
+4. **Capture diff, not full snapshot** — `old_values` and `new_values` store only the changed fields, not the entire row.
+5. **IP capture** — `req.ip` or `x-forwarded-for` header (behind proxy).
+6. **Immutable created_at** — use a DB default, never accept from the client.
+7. **Partitioning (at scale)** — partition by `created_at` monthly for fast range queries and easy archival.
+
+### Service Pattern
+
+```
+// AuditService.log({ userId, action, entityType, entityId, oldValues, newValues, ip })
+// Called from the Service layer AFTER the business operation succeeds.
+```
+
+---
+
+## 8. Risks & Edge Cases
+
+### Critical Risks
+
+| # | Risk | Impact | Mitigation |
+|---|---|---|---|
+| 1 | **Race condition on booking** | Double booking, overselling | `SELECT … FOR UPDATE` + DB CHECK constraint |
+| 2 | **Slot deleted while customer is booking** | Orphaned appointment | Check `deleted_at IS NULL` inside the lock |
+| 3 | **Branch manager accessing another branch** | Data breach | Scope-check middleware on every branch-bound endpoint |
+| 4 | **JWT token theft** | Unauthorized access | Short-lived access tokens (15m), refresh rotation, blacklist on logout |
+| 5 | **File upload abuse** | Storage exhaustion, malware | File size limits (5MB), allowed MIME types, virus scanning (ClamAV) |
+| 6 | **Seed script re-runs** | Duplicate data | `INSERT … ON CONFLICT DO NOTHING`, idempotent by design |
+| 7 | **Timezone bugs** | Wrong appointment times | Store UTC in DB, convert at API boundary, document Oman = GMT+4 |
+| 8 | **Permanent purge deletes referenced slots** | FK violations | Purge job checks for any `appointment.status IN ('booked','completed')` before deleting |
+
+### Edge Cases to Handle
+
+| Edge Case | Handling |
+|---|---|
+| Customer cancels after slot is soft-deleted | Allow cancellation; decrement counter; slot remains deleted |
+| Reschedule to a slot in a different branch | Allow if the target slot exists and has capacity |
+| Staff deactivated while having future appointments | Reassign or notify Branch Manager; don't auto-cancel customer bookings |
+| `max_bookings` reduced below `current_bookings` | Reject the update; admin must cancel excess appointments first |
+| Concurrent reschedule of the same appointment | First transaction wins; second gets 409 Conflict |
+| Customer uploads corrupt / oversized file | Validate MIME type and size at Multer middleware; reject before processing |
+| Midnight boundary slots (23:45–00:15) | Discourage or handle with `slot_date` referring to the start date |
+| Customer books then immediately cancels (abuse) | Implement rate limiting (max 3 cancellations per day) |
+
+---
+
+## 9. Scalability Considerations
+
+### Phase 1 — Single Server (Launch)
+
+- Single Express instance + PostgreSQL on the same machine or managed DB (e.g., Neon, Supabase, RDS).
+- Connection pooling via `pg-pool` (min: 5, max: 20).
+- This comfortably handles **thousands of daily bookings**.
+
+### Phase 2 — Horizontal Scaling
+
+| Component | Strategy |
+|---|---|
+| **Application** | Stateless Express instances behind a load balancer (PM2 cluster / Nginx upstream) |
+| **Database** | Read replicas for reporting/analytics; primary for writes |
+| **Sessions/Locks** | Redis for distributed rate limiting and optional slot locks |
+| **File Storage** | Move from local disk to S3-compatible (MinIO for on-prem, AWS S3 for cloud) |
+| **Audit Logs** | Partition `audit_log` table by month; archive old partitions to cold storage |
+| **Caching** | Redis cache for branch list, service types (rarely change); invalidate on update |
+
+### Phase 3 — Advanced (If Needed)
+
+| Capability | Approach |
+|---|---|
+| **Real-time availability** | WebSocket / SSE push when slot capacity changes |
+| **Event-driven architecture** | Emit domain events (`AppointmentBooked`) → message queue (RabbitMQ/Redis Streams) → notification service, analytics |
+| **Multi-region** | PostgreSQL logical replication across regions; CDN for static assets |
+| **Monitoring** | Prometheus metrics + Grafana dashboards; alert on booking failure rate > threshold |
+
+### Database Scalability Checklist
+
+- [ ] Partial indexes for soft-delete queries (`WHERE deleted_at IS NULL`)
+- [ ] Partitioning for `audit_log` and `appointment` by date
+- [ ] Connection pooling with PgBouncer for >100 concurrent connections
+- [ ] Materialized views for reporting (e.g., daily booking stats per branch)
+- [ ] `EXPLAIN ANALYZE` on every critical query before production
+
+---
+
+## Summary
+
+This design gives FlowCare a **production-grade foundation** with:
+
+- **Clean layered architecture** that separates concerns and is easy to test
+- **Robust booking logic** using pessimistic locking to eliminate race conditions
+- **Fine-grained RBAC** with branch-scoped access for managers and staff
+- **Immutable audit trail** for compliance and debugging
+- **Soft delete with configurable retention** for safe data lifecycle management
+- **Clear scalability path** from single-server to distributed architecture
+
+> [!IMPORTANT]
+> This document is the **design blueprint**. No code should be written until this architecture is reviewed and approved. The next step is to create a detailed implementation plan with file structure, route definitions, and migration scripts.
