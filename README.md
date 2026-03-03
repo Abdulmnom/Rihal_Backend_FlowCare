@@ -57,7 +57,7 @@ NODE_ENV=development
 
 # Database
 DB_HOST=localhost
-DB_PORT=5432          ← ⚠️ Must be 5432, NOT 3000
+DB_PORT=5432          
 DB_NAME=flowcare
 DB_USER=postgres
 DB_PASSWORD=your_password_here
@@ -195,6 +195,8 @@ Backend_FlowCare/
 
 ## 🔌 API Endpoints
 
+I Recomendded to use Postman to test the API.
+
 ### Authentication
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
@@ -243,16 +245,6 @@ Backend_FlowCare/
 
 ---
 
-## ⚠️ Important Notes
-
-- **`DB_PORT`** must be **`5432`** (PostgreSQL default), not `3000` (Express server port).
-- The **`.env`** file is excluded from Git (listed in `.gitignore`).
-- All timestamps are stored in **UTC** in the database.
-- Seed data is **idempotent** — you can safely run `npm run seed` multiple times.
-- Booking logic uses **pessimistic locking** (`SELECT ... FOR UPDATE`) to prevent double booking.
-- Rescheduling is **atomic** — cancel old + book new happens in a single database transaction.
-
----
 
 ## 🛡️ Security Features
 

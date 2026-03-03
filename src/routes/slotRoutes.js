@@ -7,6 +7,7 @@ const { authorize, branchScope } = require('../middleware/authorize');
 const validate = require('../middleware/validate');
 const { ROLES } = require('../config/constants');
 const { slotSchema, slotUpdateSchema, slotQuerySchema } = require('../validators/schemas');
+const validateUUID = require('../middleware/validateUUID');
 
 // GET /api/v1/slots
 router.get(
@@ -28,6 +29,7 @@ router.get(
 router.get(
     '/:id',
     authenticate,
+    validateUUID(),
     asyncHandler(async (req, res) => {
         const slot = await SlotService.findById(req.params.id);
         res.json({ success: true, data: slot });
@@ -55,6 +57,7 @@ router.post(
 router.put(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER),
     validate(slotUpdateSchema),
     asyncHandler(async (req, res) => {
@@ -67,6 +70,7 @@ router.put(
 router.delete(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER),
     asyncHandler(async (req, res) => {
         const result = await SlotService.softDelete(req.params.id, req.user.id, req.ip);

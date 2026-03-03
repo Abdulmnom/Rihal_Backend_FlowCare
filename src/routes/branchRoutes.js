@@ -7,6 +7,7 @@ const { authorize } = require('../middleware/authorize');
 const validate = require('../middleware/validate');
 const { ROLES } = require('../config/constants');
 const { branchSchema, branchUpdateSchema, paginationSchema } = require('../validators/schemas');
+const validateUUID = require('../middleware/validateUUID');
 
 // GET /api/v1/branches
 router.get(
@@ -24,6 +25,7 @@ router.get(
 router.get(
     '/:id',
     authenticate,
+    validateUUID(),
     asyncHandler(async (req, res) => {
         const branch = await BranchService.findById(req.params.id);
         res.json({ success: true, data: branch });
@@ -46,6 +48,7 @@ router.post(
 router.put(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER),
     validate(branchUpdateSchema),
     asyncHandler(async (req, res) => {
@@ -58,6 +61,7 @@ router.put(
 router.delete(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN),
     asyncHandler(async (req, res) => {
         const result = await BranchService.deactivate(req.params.id, req.user.id, req.ip);

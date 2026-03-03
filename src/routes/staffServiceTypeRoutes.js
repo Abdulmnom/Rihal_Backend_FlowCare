@@ -7,6 +7,7 @@ const { authorize } = require('../middleware/authorize');
 const validate = require('../middleware/validate');
 const { ROLES } = require('../config/constants');
 const { staffServiceTypeSchema } = require('../validators/schemas');
+const validateUUID = require('../middleware/validateUUID');
 
 // POST /api/v1/staff-service-types (assign)
 router.post(
@@ -24,6 +25,7 @@ router.post(
 router.delete(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER),
     asyncHandler(async (req, res) => {
         const result = await StaffServiceTypeService.unassign(req.params.id, req.user.id, req.ip);
@@ -35,6 +37,7 @@ router.delete(
 router.get(
     '/staff/:staffId',
     authenticate,
+    validateUUID('staffId'),
     asyncHandler(async (req, res) => {
         const data = await StaffServiceTypeService.findByStaff(req.params.staffId);
         res.json({ success: true, data });
@@ -45,6 +48,7 @@ router.get(
 router.get(
     '/service-type/:serviceTypeId',
     authenticate,
+    validateUUID('serviceTypeId'),
     asyncHandler(async (req, res) => {
         const data = await StaffServiceTypeService.findByServiceType(req.params.serviceTypeId);
         res.json({ success: true, data });

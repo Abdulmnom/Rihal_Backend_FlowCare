@@ -7,6 +7,7 @@ const { authorize } = require('../middleware/authorize');
 const validate = require('../middleware/validate');
 const { ROLES } = require('../config/constants');
 const { createUserSchema, updateUserSchema, paginationSchema } = require('../validators/schemas');
+const validateUUID = require('../middleware/validateUUID');
 
 // GET /api/v1/users
 router.get(
@@ -39,6 +40,7 @@ router.get(
 router.get(
     '/:id',
     authenticate,
+    validateUUID(),
     asyncHandler(async (req, res) => {
         // Customers & staff can only view their own profile
         if (
@@ -75,6 +77,7 @@ router.post(
 router.put(
     '/:id',
     authenticate,
+    validateUUID(),
     validate(updateUserSchema),
     asyncHandler(async (req, res) => {
         // Self-update: customers & staff can only update their own profile (limited fields)
@@ -103,6 +106,7 @@ router.put(
 router.delete(
     '/:id',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER),
     asyncHandler(async (req, res) => {
         const result = await UserService.deactivate(req.params.id, req.user.id, req.ip);

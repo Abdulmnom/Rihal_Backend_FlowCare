@@ -12,6 +12,7 @@ const {
     cancelAppointmentSchema,
     appointmentQuerySchema,
 } = require('../validators/schemas');
+const validateUUID = require('../middleware/validateUUID');
 
 // GET /api/v1/appointments
 router.get(
@@ -40,6 +41,7 @@ router.get(
 router.get(
     '/:id',
     authenticate,
+    validateUUID(),
     asyncHandler(async (req, res) => {
         const appointment = await AppointmentService.findById(req.params.id);
 
@@ -75,6 +77,7 @@ router.post(
 router.put(
     '/:id/cancel',
     authenticate,
+    validateUUID(),
     validate(cancelAppointmentSchema),
     asyncHandler(async (req, res) => {
         // Verify ownership for customers
@@ -94,6 +97,7 @@ router.put(
 router.put(
     '/:id/reschedule',
     authenticate,
+    validateUUID(),
     validate(rescheduleAppointmentSchema),
     asyncHandler(async (req, res) => {
         // Verify ownership for customers
@@ -113,6 +117,7 @@ router.put(
 router.put(
     '/:id/complete',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF),
     asyncHandler(async (req, res) => {
         const result = await AppointmentService.complete(req.params.id, req.user.id, req.ip);
@@ -124,6 +129,7 @@ router.put(
 router.put(
     '/:id/no-show',
     authenticate,
+    validateUUID(),
     authorize(ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF),
     asyncHandler(async (req, res) => {
         const result = await AppointmentService.markNoShow(req.params.id, req.user.id, req.ip);
