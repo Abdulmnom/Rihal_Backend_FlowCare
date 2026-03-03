@@ -1,0 +1,98 @@
+name: FlowCare CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ============ Job 1: Test ============
+  test:
+    name: Test & Verify
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: flowcare_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpassword
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      PORT: 3000
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: flowcare_test
+      DB_USER: postgres
+      DB_PASSWORD: testpassword
+      JWT_SECRET: ci-test-jwt-secret-key
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-key
+      JWT_REFRESH_EXPIRES_IN: 7d
+      UPLOAD_DIR: ./uploads
+      MAX_FILE_SIZE: 5242880
+      LOG_LEVEL: error
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations
+        run: npx knex migrate:latest --knexfile knexfile.js
+
+      - name: Run seed data
+        run: npx knex seed:run --knexfile knexfile.js
+
+      - name: Health check
+        run: |
+          node src/server.js &
+          sleep 5
+          curl -f http://localhost:3000/api/v1/health || exit 1
+          echo "✅ Health check passed!"
+          kill %1
+
+  # ============ Job 2: Build & Push Docker Image ============
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/flowcare-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/flowcare-api:${{ github.sha }}
