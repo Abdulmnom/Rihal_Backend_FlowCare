@@ -254,5 +254,18 @@ I Recomendded to use Postman to test the API.
 - **JWT Authentication** — Short-lived access tokens (15m) + refresh tokens (7d)
 - **Password Hashing** — bcrypt with 12 salt rounds
 - **Input Validation** — Joi schemas on every endpoint
+- **UUID Validation** — Middleware validates all ID params before DB queries
 - **SQL Injection Protection** — Parameterized queries via Knex
 - **Audit Logging** — Every sensitive action is logged
+
+---
+
+## 🐳 Docker Deployment
+
+For Docker and cloud deployment instructions, see the [docker/README.md](docker/README.md).
+
+**Quick start with Docker:**
+```bash
+docker-compose -f docker/docker-compose.yml up --build
+```
+
