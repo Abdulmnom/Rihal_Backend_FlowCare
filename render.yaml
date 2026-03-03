@@ -1,0 +1,53 @@
+databases:
+  - name: flowcare-db
+    plan: free
+    databaseName: flowcare
+    user: flowcare_user
+
+services:
+  - type: web
+    name: flowcare-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npx knex migrate:latest --knexfile knexfile.js && npx knex seed:run --knexfile knexfile.js && node src/server.js
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DB_HOST
+        fromDatabase:
+          name: flowcare-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: flowcare-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: flowcare-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: flowcare-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: flowcare-db
+          property: password
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: MAX_FILE_SIZE
+        value: 5242880
+      - key: LOG_LEVEL
+        value: info
