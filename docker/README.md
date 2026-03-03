@@ -69,10 +69,14 @@ This will:
 git init
 git add .
 git commit -m "Initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/Backend_FlowCare.git
+git remote add origin https://github.com/Abdulmnom/Backend_FlowCare.git
 git push -u origin main
 ```
 
+if thereare any conflicts, resolve them and push again. 
+or user 
+''' bash
+Remove-Item -Recurse -Force .git
 ### Step 2: Create PostgreSQL on Render
 
 1. Go to [Render Dashboard](https://dashboard.render.com)
